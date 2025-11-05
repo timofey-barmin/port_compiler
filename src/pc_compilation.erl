@@ -40,6 +40,7 @@
 compile_and_link(State, Specs) ->
     %% Compile each of the sources
     NewBins = compile_sources(State, Specs),
+    Root = rebar_state:dir(State),
 
     %% Make sure that the target directories exist
     lists:foreach(fun(Spec) ->
@@ -56,7 +57,8 @@ compile_and_link(State, Specs) ->
               AllBins = [sets:from_list(Bins),
                          sets:from_list(NewBins)],
               Intersection = sets:intersection(AllBins),
-              case needs_link(Target, sets:to_list(Intersection)) of
+              BinFullPaths = [filename:join(Root, D) || D <- sets:to_list(Intersection)],
+              case needs_link(Target, BinFullPaths) of
                   true ->
                       LinkLang = pc_port_specs:link_lang(Spec),
                       LinkTemplate = select_link_template(LinkLang, Target),
@@ -71,13 +73,15 @@ compile_and_link(State, Specs) ->
               end
       end, Specs).
 
-clean(_State, Specs) ->
+clean(State, Specs) ->
+    Root = rebar_state:dir(State),
     lists:foreach(fun(Spec) ->
                           Target = pc_port_specs:target(Spec),
                           Objects = pc_port_specs:objects(Spec),
+                          ObjectsFullPaths = [filename:join(Root, O) || O <- Objects],
                           rebar_file_utils:delete_each([Target]),
-                          rebar_file_utils:delete_each(Objects),
-                          rebar_file_utils:delete_each(port_deps(Objects))
+                          rebar_file_utils:delete_each(ObjectsFullPaths),
+                          rebar_file_utils:delete_each(port_deps(ObjectsFullPaths))
                   end, Specs).
 
 %%%===================================================================
@@ -125,7 +129,7 @@ compile_each(State, [Source | Rest], Type, Env, {NewBins, CDB}) ->
     Cmd = expand_command(Template, Env, Source, Bin),
     CDBEnt = cdb_entry(State, Source, Cmd, Rest),
     NewCDB = [CDBEnt | CDB],
-    case needs_compile(Source, Bin) of
+    case needs_compile(Source, Bin, rebar_state:dir(State)) of
         true ->
             ShOpts = [ {env, Env}
                      , return_on_error
@@ -214,8 +218,12 @@ select_compile_drv_template("$CXX") -> "DRV_CXX_TEMPLATE".
 select_compile_exe_template("$CC")  -> "EXE_CC_TEMPLATE";
 select_compile_exe_template("$CXX") -> "EXE_CXX_TEMPLATE".
 
-needs_compile(Source, Bin) ->
-    needs_link(Bin, [Source|bin_deps(Bin)]).
+needs_compile(Source, Bin, Root) ->
+    FullSource = filename:join(Root, Source),
+    FullBin = filename:join(Root, Bin),
+    Deps = bin_deps(FullBin),
+    DepsFullPaths = [filename:join(Root, D) || D <- Deps],
+    needs_link(FullBin, [FullSource|DepsFullPaths]).
 
 %% NOTE: This relies on -MMD being passed to the compiler and returns an
 %% empty list if the .d file is not available.  This means header deps are
@@ -224,14 +232,14 @@ bin_deps(Bin) ->
     [DepFile] = port_deps([Bin]),
     case file:read_file(DepFile) of
         {ok, Deps} ->
-            parse_bin_deps(list_to_binary(Bin), Deps);
+            parse_bin_deps(Deps);
         {error, _Err} ->
             []
     end.
 
-parse_bin_deps(Bin, Deps) ->
+parse_bin_deps(Deps) ->
     Ds = re:split(Deps, "\\s*\\\\\\R\\s*|\\s+", [{return, binary}]),
-    [D || D <- Ds, D =/= <<>>, D =/= <<Bin/binary,":">>].
+    [D || D <- Ds, D =/= <<>> andalso binary:last(D) =/= $:].
 
 %%
 %% == linking ==
