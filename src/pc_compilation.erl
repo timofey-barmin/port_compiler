@@ -67,8 +67,15 @@ compile_and_link(State, Specs) ->
                                            pc_util:strjoin(Bins, " "),
                                            Target),
                       rebar_api:info("Linking ~ts", [Target]),
-                      rebar_utils:sh(Cmd, [{env, Env}, {cd, rebar_state:dir(State)}]);
+                      CD = rebar_state:dir(State),
+                      rebar_api:debug("Link command: ~s~n"
+                                      "Current dir: ~p~n"
+                                      "Env: ~p", [Cmd, CD, Env]),
+                      {ok, Output} = rebar_utils:sh(Cmd, [{env, Env}, {cd, CD}]),
+                      rebar_api:debug("Linker output: ~ts", [Output]),
+                      ok;
                   false ->
+                      rebar_api:debug("Skip linking ~p, up to date", [Target]),
                       ok
               end
       end, Specs).
@@ -79,9 +86,13 @@ clean(State, Specs) ->
                           Target = pc_port_specs:target(Spec),
                           Objects = pc_port_specs:objects(Spec),
                           ObjectsFullPaths = [filename:join(Root, O) || O <- Objects],
+                          PortDeps = port_deps(ObjectsFullPaths),
+                          rebar_api:debug("Deleting target: ~p", [Target]),
                           rebar_file_utils:delete_each([Target]),
+                          rebar_api:debug("Deleting obj files: ~p", [ObjectsFullPaths]),
                           rebar_file_utils:delete_each(ObjectsFullPaths),
-                          rebar_file_utils:delete_each(port_deps(ObjectsFullPaths))
+                          rebar_api:debug("Deleting port deps: ~p", [PortDeps]),
+                          rebar_file_utils:delete_each(PortDeps)
                   end, Specs).
 
 %%%===================================================================
@@ -140,6 +151,7 @@ compile_each(State, [Source | Rest], Type, Env, {NewBins, CDB}) ->
             compile_each(State, Rest, Type, Env,
                          {[Bin | NewBins], NewCDB});
         false ->
+            rebar_api:debug("Skip compilation ~p, up to date", [Bin]),
             compile_each(State, Rest, Type, Env, {NewBins, NewCDB})
     end.
 
@@ -194,17 +206,23 @@ expand_command(TmplName, Env, InFiles, OutFile) ->
     rebar_api:expand_env_variable(Cmd1, "PORT_OUT_FILE", OutFile1).
 
 exec_compiler(_Config, Source, Cmd, ShOpts) ->
+    rebar_api:info("Compiling ~ts", [Source]),
+    rebar_api:debug("Compile command: ~s~n"
+                    "Current dir: ~p~n"
+                    "Env: ~p",
+                    [Cmd, proplists:get_value(cd, ShOpts),
+                     proplists:get_value(env, ShOpts)]),
     case rebar_utils:sh(Cmd, ShOpts) of
-        {error, {_RC, RawError}} ->
+        {error, {RC, RawError}} ->
             AbsSource = filename:absname(Source),
-            rebar_api:info("Compiling ~ts", [AbsSource]),
             Error = re:replace(RawError, Source, AbsSource,
                                [{return, list}, global, unicode]),
-            rebar_api:error("~ts", [Error]),
+            rebar_api:error("Compiler returned: ~p~n"
+                            "Output: ~ts~n"
+                            "Raw output: ~s", [RC, Error, RawError]),
             rebar_api:abort();
         {ok, Output} ->
-            rebar_api:info("Compiling ~ts", [Source]),
-            rebar_api:debug("~ts", [Output])
+            rebar_api:debug("Compiler output: ~ts", [Output])
     end.
 
 select_compile_template(drv, Compiler) ->
